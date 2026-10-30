@@ -1,97 +1,209 @@
-# VPN Rotation & MariaDB Authentication Testing
+# Manifest — VPN Orchestration & Hydra Session Management
 
-A Bash-based security research project exploring MariaDB authentication testing, VPN connection rotation, connection-state monitoring, and Hydra session recovery in authorized lab environments.
-
-> **⚠️ Disclaimer**
+> **Experimental security-research project. Authorized lab use only.**
 >
-> This project is intended for security research and controlled, explicitly authorized lab environments only. Automated password guessing and IP rotation can violate laws, service policies, and organizational security rules. Never use this tool against systems without explicit written authorization.
+> Manifest automates MariaDB authentication testing with Hydra while managing OpenVPN connections and Hydra restore state. Because the implementation combines automated password guessing with VPN endpoint rotation, it can undermine source-IP-based protections if misused. Use it only in an isolated lab or against a system covered by explicit written authorization and a clearly defined Rules of Engagement (RoE). Do not use it to bypass protections on third-party systems.
 
 ## Overview
 
-The project combines several Linux command-line tools to explore authentication-testing workflows and network connection behavior.
+Manifest is a Bash automation script (the file is currently named `manifest.py`, but its contents use Bash syntax). It coordinates several command-line tools to perform a controlled MariaDB authentication-resilience assessment.
 
-The script includes:
-- **MariaDB connectivity checks:** Tests whether a target database responds to connection attempts.
-- **VPN configuration management:** Retrieves OpenVPN configurations from VPNGate or loads manually supplied configurations.
-- **Connection rotation:** Attempts to establish VPN connections and checks the resulting public IP address.
-- **Hydra integration:** Implements automated authentication testing using configured username and password wordlists.
-- **Session recovery:** Preserves Hydra restore state when an interrupted run may need to resume.
-- **Logging and monitoring:** Tracks test output, connection status, and the number of attempts.
-- **Input validation:** Accepts a target address and configurable database port.
+The project focuses on workflow orchestration and recovery:
 
-## Technology Stack
+- Checks required local tools and SecLists wordlists.
+- Retrieves OpenVPN profiles from VPNGate, with a web-page fallback, or loads profiles placed in a local manual directory.
+- Establishes an OpenVPN connection and checks the resulting public IPv4 address.
+- Records observed VPN exit addresses and profile endpoint addresses.
+- Performs MariaDB connectivity / response checks before starting the Hydra process.
+- Monitors Hydra output, attempt counts, connection-block messages, and stalled sessions.
+- Preserves Hydra's restore file when a run is interrupted by the script's configured stop conditions.
 
-| Technology | Purpose |
-|---|---|
-| Bash | Automation and workflow orchestration |
-| Hydra | Authentication testing |
-| MariaDB / MySQL client | Database connectivity checks |
-| OpenVPN | VPN connection management |
-| VPNGate | VPN configuration source |
-| SecLists | Username and password wordlists |
-| cURL, AWK, grep, sed | Data retrieval and text processing |
-| Linux | Execution environment |
+**Important:** VPN rotation is not a security boundary and does not make testing anonymous. Public VPN endpoints may be unreliable, shared, logged, or blocked. The tool does not guarantee that an address change will occur.
+
+## STAR — Project Context
+
+### Situation
+
+During an authorized MariaDB authentication-resilience assessment, the target service applied source-address-based blocking after repeated connection errors. VPN connectivity was also inconsistent, and an interrupted Hydra process could require manual recovery.
+
+### Task
+
+Build a Bash-based workflow to coordinate network connectivity checks, VPN profile handling, controlled authentication testing, and recovery of interrupted Hydra sessions—while keeping the assessment within its approved scope.
+
+### Action
+
+- **Orchestrated system tools:** Integrated Bash, OpenVPN, Hydra, the MariaDB client, and standard Linux utilities.
+- **Managed VPN profiles:** Added VPNGate API retrieval, a web-page fallback, and support for manually supplied `.ovpn` profiles.
+- **Checked connectivity:** Queried public-IP services after connection attempts and checked whether the configured MariaDB endpoint responded.
+- **Tracked addresses:** Recorded observed VPN exit addresses and profile endpoint addresses in a local state file.
+- **Added execution controls:** Defined an attempt budget, wait interval, stall timeout, and maximum number of profiles per batch.
+- **Handled interruptions:** Used Hydra's native restore mechanism to retain recoverable session state when the script stopped a run.
+- **Added operational safeguards:** Included an authorization prompt, dependency checks, logging, and cleanup handling.
+
+### Result
+
+The implementation brings VPN profile handling, connectivity checks, process monitoring, and Hydra session recovery into one Bash workflow. It reduces the amount of manual coordination required during a controlled lab assessment and provides local state that helps diagnose interrupted runs.
+
+The project demonstrates practical experience with Linux process management, shell scripting, network troubleshooting, service-response analysis, and automation reliability.
+
+### Takeaway
+
+The main engineering challenge was not simply launching a testing utility; it was coordinating several external processes and handling unreliable network conditions without unnecessarily losing recoverable session state. In a real assessment, source-IP blocking should be evaluated as one layer of defense—not treated as a substitute for strong authentication, network segmentation, account-level controls, and monitoring.
+
+## Architecture & Workflow
+
+```mermaid
+flowchart TD
+    A[Start Manifest] --> B[Parse target and options]
+    B --> C[Authorization confirmation]
+    C --> D[Check dependencies and SecLists]
+    D --> E[Prepare working directory and state]
+    E --> F[Load manual VPN profiles]
+    F -->|None available| G[Retrieve VPNGate profiles]
+    G -->|API unavailable| H[Try VPNGate web fallback]
+    H -->|No profiles| X[Record failure and retry / exit]
+    F --> I[Establish OpenVPN connection]
+    G --> I
+    H --> I
+    I --> J[Check public IP and track addresses]
+    J --> K[Check MariaDB response]
+    K --> L[Run / monitor Hydra process]
+    L --> M{Stop condition?}
+    M -->|Interrupted or threshold reached| N[Preserve restore state]
+    N --> O[Continue workflow when appropriate]
+    M -->|Natural completion| P[Remove restore state]
+    P --> Q[Cleanup and exit]
+    O --> F
+    X --> Q
+```
+
+The diagram is a high-level representation of the current script. Exact behavior depends on network responses, available profiles, and process exit conditions.
 
 ## Requirements
 
-The script expects a Linux environment with the following tools available:
+The script checks for these commands:
 
-- Bash
-- Hydra
-- MySQL command-line client
-- OpenVPN
-- cURL
-- AWK, grep, sed, and other standard utilities
-- SecLists username and password wordlists
-
-The script also expects a Desktop directory and creates working files under `~/Desktop/rotate`.
-
-## Configuration
-
-The script supports the following command-line options:
-
-| Option | Description |
+| Dependency | Purpose |
 |---|---|
-| `-t`, `--target` | Target database IP address or hostname |
-| `-p`, `--port` | Database port; defaults to `3306` |
-| `--fresh` | Removes the saved restore state before starting |
-| `-h`, `--help` | Displays usage information |
+| Bash | Main scripting environment |
+| `hydra` | Authentication-testing engine |
+| `mysql` | MariaDB/MySQL connectivity checks |
+| `openvpn` | VPN connection management |
+| `curl` | API, web, and public-IP requests |
+| `base64`, `awk`, `grep`, `sed`, `tail`, `shuf` | Parsing and process monitoring |
+| `timeout`, `getent`, `id`, `sudo` | Connectivity limits and environment handling |
+| SecLists | Username and password wordlists |
 
-The program requests an authorization confirmation unless the relevant environment variable is set.
+Install dependencies using your Linux distribution's trusted package repositories. SecLists must be available in one of the locations searched by the script:
 
-## Security Considerations
+- `~/Desktop/SecLists`
+- `~/Desktop/seclists`
+- `~/Desktop/SecLists-master`
+- `/usr/share/seclists`
 
-This implementation combines automated credential guessing with VPN rotation. This can bypass IP-based rate limits and account-lockout protections, so it must not be used to circumvent security controls on third-party systems.
+The script selects known wordlist filenames from the SecLists directory. If the expected files are absent, it exits.
 
-Before using or publishing the project, consider the following safeguards:
+## Configuration & Runtime Behavior
 
-- Use an isolated lab and dedicated test accounts.
-- Obtain written authorization and define a strict testing scope.
-- Prefer fixed, explicitly approved VPN endpoints over automatically sourced public configurations.
-- Enforce a hard maximum on authentication attempts and execution time.
-- Protect logs and recovery files because they may contain sensitive information.
-- Validate cleanup behavior and ensure VPN processes terminate safely.
-- Never store real credentials or production secrets in the repository.
-- Use controlled test cases to evaluate rate limiting, alerting, and account-lockout behavior.
+The current script accepts these arguments:
 
-## Known Limitations
+| Argument | Description |
+|---|---|
+| `-t`, `--target` | MariaDB host or IP address; required |
+| `-p`, `--port` | MariaDB port; defaults to `3306` |
+| `--fresh` | Removes the saved Hydra restore state before starting |
+| `-h`, `--help` | Displays the built-in usage information |
 
-- VPNGate endpoint availability and connection reliability may vary.
-- A changed public IP does not guarantee that a database connection is permitted.
-- Network filtering, database configuration, and account policies can affect connectivity checks.
-- The script relies on particular SecLists directory and filename conventions.
-- The script should be reviewed and tested in an isolated environment before any authorized use.
+The script requests an authorization confirmation unless `I_AM_AUTHORIZED=1` is present in the environment. This prompt is only a reminder; it is **not** a technical authorization check and does not restrict the target to an approved allowlist.
 
-## Project Status
+### Built-in working paths
 
-**Experimental — security research and lab testing.**
+The script creates its working directory under:
 
-The project is not intended for production deployment. Further work should focus on safe test controls, reliable error handling, improved configuration management, and defensive monitoring integration.
+`~/Desktop/rotate`
+
+It uses this directory for VPN profiles, logs, restore state, and IP tracking. The `manual` subdirectory is used for manually supplied OpenVPN profiles.
+
+### Current internal limits
+
+| Setting | Current value | Purpose |
+|---|---:|---|
+| `ATTEMPT_BUDGET` | `10` | Stops a Hydra run after the configured attempt count |
+| `WAIT_BETWEEN` | `3` seconds | Hydra wait interval |
+| `RESTART_MAX` | `15` | Maximum profiles fetched in a batch |
+| `STALL_SECS` | `60` seconds | No-attempt stall threshold |
+| `MAX_BATCHES` | `0` | `0` means the outer batch loop has no configured batch limit |
+
+These are implementation values, not a recommendation for testing against production systems. Keep assessments low-impact and use test accounts and a lab service.
+
+## Safe Lab Use
+
+Before running the script:
+
+1. Use a disposable, isolated MariaDB instance and dedicated test accounts.
+2. Confirm written authorization, target ownership, allowed source networks, testing window, and stop conditions.
+3. Review the script and its dependencies; do not assume the authorization prompt enforces scope.
+4. Use only test credentials and non-sensitive wordlists.
+5. Confirm that the database, VPN endpoints, and network paths are all within the approved test plan.
+6. Monitor the database and stop the assessment if service stability is affected.
+7. Protect logs and restore files, and remove test data after the assessment.
+
+The current implementation does **not** provide a dry-run mode or a built-in target allowlist. Those should be added before the tool is used in any environment where scope enforcement must be technically guaranteed. A safer next iteration would also default to fixed, explicitly approved VPN endpoints rather than public endpoint rotation.
+
+## Logs & State
+
+The script stores operational data in `~/Desktop/rotate`, including:
+
+| File / directory | Purpose |
+|---|---|
+| `hydra.log` | Hydra output |
+| `hydra.restore` | Hydra session recovery state |
+| `seen_ips.txt` | Previously observed public / endpoint addresses |
+| `vpn.log` | OpenVPN connection log |
+| `manual/` | Manually supplied `.ovpn` profiles |
+| `ovpn/` | Working VPN profile directory |
+
+Treat these files as potentially sensitive. In particular, review logs before sharing them; they may contain target details or authentication-test output.
+
+## Limitations & Future Improvements
+
+- VPNGate availability, profile quality, and connection speed are outside the project's control.
+- A changed public IP does not prove that the target is reachable or that a test is authorized.
+- The current authorization prompt is user confirmation only; it is not scope enforcement.
+- The script relies on specific SecLists paths and filenames.
+- The working directory is fixed under the user's Desktop.
+- The script is Bash despite its `.py` filename; renaming it to `manifest.sh` would make its purpose clearer.
+- The current implementation should be reviewed for process cleanup, TLS verification, secret handling, and restore-file lifecycle.
+
+Potential improvements:
+
+- Add a strict target allowlist and an explicit lab/scope configuration file.
+- Add a dry-run mode that validates configuration without starting authentication attempts.
+- Replace public VPN rotation with approved, fixed test endpoints.
+- Add structured logs and a final machine-readable report.
+- Validate command-line arguments and dependency versions more strictly.
+- Add automated tests using mocked command outputs and a local disposable database.
+
+## Technology Stack
+
+| Technology | Role |
+|---|---|
+| Bash | Workflow orchestration |
+| Hydra | Authentication-testing process |
+| OpenVPN | VPN connection management |
+| VPNGate | Public VPN profile source |
+| MariaDB / MySQL client | Database connectivity checks |
+| SecLists | Test wordlists |
+| cURL and GNU/Linux utilities | HTTP requests, parsing, monitoring, and process control |
+
+## Disclaimer
+
+This project is provided for educational purposes and authorized security assessments only. Do not use it against systems, accounts, or networks without explicit permission. You are responsible for complying with applicable laws, contractual obligations, and the assessment's Rules of Engagement.
 
 ## License
 
-No license has been specified yet. Add an appropriate license file before permitting reuse, modification, or redistribution.
+No license file was present in the supplied project archive. Add a license before granting others permission to use, modify, or redistribute this project.
 
 ## Author
 
-Developed as a cybersecurity research project focused on Linux automation, database authentication behavior, and network security testing.
+Developed as a cybersecurity research project focused on Bash automation, VPN process orchestration, MariaDB authentication behavior, and recoverable security-testing workflows.
